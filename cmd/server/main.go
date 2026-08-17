@@ -51,7 +51,7 @@ func main() {
 
 		log.Printf("New connection request: Name: %s, Device: %s, IP: %s\n", name, device, ip)
 
-		client := ws.NewClient(hub, conn, name, device)
+		client := ws.NewClient(hub, conn, name, device, ip)
 
 		// Start write pump in a separate goroutine.
 		go client.WritePump()

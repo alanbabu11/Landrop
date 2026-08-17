@@ -46,17 +46,19 @@ type Client struct {
 	Conn         *websocket.Conn
 	Send         chan WSMessage
 	RelayPartner *Client // Bi-directional pointer to partner for fallback relay channel
+	DefaultRoom  string  // Initial IP-based room to reset back to
 }
 
 // NewClient initializes a new Client.
-func NewClient(hub *Hub, conn *websocket.Conn, name, device string) *Client {
+func NewClient(hub *Hub, conn *websocket.Conn, name, device, defaultRoom string) *Client {
 	return &Client{
-		ID:     generateID(),
-		Name:   name,
-		Device: device,
-		Hub:    hub,
-		Conn:   conn,
-		Send:   make(chan WSMessage, 1024), // Large channel for binary frame buffering
+		ID:          generateID(),
+		Name:        name,
+		Device:      device,
+		Hub:         hub,
+		Conn:        conn,
+		Send:        make(chan WSMessage, 1024), // Large channel for binary frame buffering
+		DefaultRoom: defaultRoom,
 	}
 }
 
@@ -184,6 +186,8 @@ func (c *Client) handleIncomingMessage(msg Message) {
 		}
 		if code != "" {
 			c.Hub.JoinRoom(code, c)
+		} else {
+			c.Hub.JoinRoom(c.DefaultRoom, c)
 		}
 
 	case "signal":

@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Monitor, Smartphone, Laptop, Radio, ArrowRight, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Monitor, Smartphone, Laptop, Radio, ArrowRight, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 import { formatSize, formatSpeed } from '../utils/fileTransfer';
 
 const getDeviceIcon = (deviceStr) => {
@@ -7,6 +7,26 @@ const getDeviceIcon = (deviceStr) => {
   if (ds.includes('phone') || ds.includes('ios') || ds.includes('android')) return <Smartphone size={24} />;
   if (ds.includes('mac') || ds.includes('windows') || ds.includes('linux')) return <Laptop size={24} />;
   return <Monitor size={24} />;
+};
+
+const isIP = (str) => {
+  if (!str) return false;
+  const ipv4Regex = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/;
+  const ipv6Regex = /:/;
+  return ipv4Regex.test(str) || ipv6Regex.test(str);
+};
+
+const maskIP = (ip) => {
+  if (!ip) return '';
+  if (ip.includes(':')) {
+    const parts = ip.split(':');
+    return `${parts[0]}:••••:••••:••••:••••`;
+  }
+  const parts = ip.split('.');
+  if (parts.length === 4) {
+    return `${parts[0]}.${parts[1]}.•••.•••`;
+  }
+  return 'Local Network (IP Masked)';
 };
 
 export const Landing = ({
@@ -37,6 +57,19 @@ export const Landing = ({
     }
   };
 
+  const handleCreateRoom = () => {
+    // Generate random secure 6-digit room code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    joinRoom(code);
+  };
+
+  const handleLeavePrivateRoom = () => {
+    // Send empty code to rejoin IP-based local network room
+    joinRoom('');
+  };
+
+  const inPrivateRoom = !isIP(roomId);
+
   return (
     <div className="glass-container glow-effect">
       <div className="header">
@@ -60,11 +93,17 @@ export const Landing = ({
 
       <div className="room-display">
         <div>
-          <span className="room-display-label">Current Room IP / Code:</span>
-          <div className="room-display-code">{roomId || 'Fetching...'}</div>
+          <span className="room-display-label">
+            {inPrivateRoom ? 'Private Channel Code:' : 'Current Room (Local Network):'}
+          </span>
+          <div className="room-display-code" style={{ fontFamily: inPrivateRoom ? 'monospace' : 'inherit', letterSpacing: inPrivateRoom ? '0.05rem' : 'normal' }}>
+            {roomId ? (isIP(roomId) ? maskIP(roomId) : roomId) : 'Fetching...'}
+          </div>
         </div>
-        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', maxWidth: '50%' }}>
-          Devices on the same network or with the same room code will discover each other automatically.
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', maxWidth: '55%' }}>
+          {inPrivateRoom 
+            ? 'You are in a private channel. Share this room code with others to connect only with them.'
+            : 'Devices on the same local network discover each other automatically.'}
         </p>
       </div>
 
@@ -169,24 +208,71 @@ export const Landing = ({
         )}
       </div>
 
-      <form className="room-join-panel" onSubmit={handleJoinCodeSubmit}>
-        <h4 style={{ fontSize: '0.95rem', fontWeight: '600', color: 'var(--text-secondary)' }}>
-          Join via manual room code
+      {/* Private Room Channels (Separated Create and Join actions) */}
+      <div className="room-actions-panel" style={{ marginTop: '3rem', paddingTop: '2rem', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
+        <h4 style={{ fontSize: '1.0rem', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '1.25rem' }}>
+          Private Room Channels
         </h4>
-        <div style={{ display: 'flex', gap: '1rem' }}>
-          <input
-            type="text"
-            className="input-field"
-            placeholder="Enter custom room code (e.g. 5678)"
-            value={manualCode}
-            onChange={(e) => setManualCode(e.target.value)}
-            style={{ marginBottom: 0 }}
-          />
-          <button type="submit" className="btn btn-primary" style={{ padding: '0 1.5rem' }}>
-            Join <ArrowRight size={18} />
-          </button>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
+          
+          {/* Create Private Room Section */}
+          <div style={{ padding: '1.25rem', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--panel-border)', borderRadius: '14px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '1rem' }}>
+            <div>
+              <h5 style={{ fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-secondary)' }}>Create a Private Room</h5>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', lineHeight: '1.3' }}>
+                Generates a secure random room code. Share this code with friends so they can discover and connect to your device.
+              </p>
+            </div>
+            {inPrivateRoom ? (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleLeavePrivateRoom}
+                style={{ width: '100%', display: 'flex', gap: '0.5rem', justifyContent: 'center', alignItems: 'center' }}
+              >
+                <RefreshCw size={14} /> Reset to Local Network
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleCreateRoom}
+                style={{ width: '100%' }}
+              >
+                Create Room
+              </button>
+            )}
+          </div>
+
+          {/* Join Private Room Section */}
+          <form
+            onSubmit={handleJoinCodeSubmit}
+            style={{ padding: '1.25rem', background: 'rgba(255, 255, 255, 0.02)', border: '1px solid var(--panel-border)', borderRadius: '14px', display: 'flex', flexDirection: 'column', gap: '1rem' }}
+          >
+            <div>
+              <h5 style={{ fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-secondary)' }}>Join a Private Room</h5>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', lineHeight: '1.3' }}>
+                Enter the private room code shared by another user to immediately connect to their custom transfer session.
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input
+                type="text"
+                className="input-field"
+                placeholder="Code (e.g. 582910)"
+                value={manualCode}
+                onChange={(e) => setManualCode(e.target.value)}
+                style={{ marginBottom: 0, flex: 1, fontSize: '0.85rem' }}
+              />
+              <button type="submit" className="btn btn-primary" style={{ padding: '0 1rem', display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                Join <ArrowRight size={16} />
+              </button>
+            </div>
+          </form>
+
         </div>
-      </form>
+      </div>
+
     </div>
   );
 };
