@@ -1,5 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { sendFileOverDataChannel, sendFileOverWebSocket, calculateSHA256 } from '../utils/fileTransfer';
+import { 
+  sendFileOverDataChannel, 
+  sendFileOverWebSocket, 
+  calculateSHA256,
+  generateECDHKeyPair,
+  exportPublicKey,
+  importPublicKey,
+  deriveSharedSecretKey,
+  calculateFingerprint,
+  decryptMetadata,
+  decryptChunk,
+  FileStorage
+} from '../utils/fileTransfer';
 
 const rtcConfig = {
   iceServers: [
@@ -11,6 +23,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
   const [connectionState, setConnectionState] = useState('new');
   const [dataChannelState, setDataChannelState] = useState('closed');
   const [activePeerId, setActivePeerId] = useState(null);
+  const [fingerprint, setFingerprint] = useState(''); // Fingerprint for the active peer connection
 
   // Unicast P2P/Relay transfer state
   const [transferState, setTransferState] = useState({
@@ -23,6 +36,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
     status: 'idle', // 'idle' | 'hashing' | 'transferring' | 'verifying' | 'completed' | 'failed'
     mode: 'p2p',
     error: null,
+    isSecure: false,
   });
 
   // Broadcast transfer state
@@ -43,20 +57,36 @@ export const useWebRTC = (sendMessage, sendBinary) => {
   const connectionTimeoutRef = useRef(null);
   const isRelayRef = useRef(false);
   const remoteCandidatesQueue = useRef([]);
+  const activePeerIdRef = useRef(null); // Ref to prevent stale closures on peer ID
+
+  // Cryptographic Key Lifecycles
+  const localECDHPrivateKeyRef = useRef(null);
+  const localPublicKeySpkiRef = useRef(''); // Local exported public key spki
+  const peerSharedKeysRef = useRef({}); // Caches derived keys by Peer ID
+  const peerFingerprintsRef = useRef({}); // Caches session fingerprints by Peer ID
+  const activeSharedKeyRef = useRef(null); // Binds the key for the active transfer session
+
+  // Storage Refs
+  const fileStorageRef = useRef(null);
+  const chunkIndexRef = useRef(0);
 
   // Unicast transfer tracking refs
   const transferMetaRef = useRef(null);
-  const transferChunksRef = useRef([]);
   const transferBytesReceivedRef = useRef(0);
   const speedIntervalRef = useRef(null);
   const lastProgressBytesRef = useRef(0);
 
   // Broadcast tracking refs
   const broadcastMetaRef = useRef(null);
-  const broadcastChunksRef = useRef([]);
   const broadcastBytesReceivedRef = useRef(0);
   const broadcastSpeedIntervalRef = useRef(null);
   const lastBroadcastBytesRef = useRef(0);
+
+  // Helper to update activePeerId state and ref together
+  const updateActivePeerId = useCallback((id) => {
+    setActivePeerId(id);
+    activePeerIdRef.current = id;
+  }, []);
 
   const cleanupWebRTC = useCallback(() => {
     if (dcRef.current) {
@@ -74,7 +104,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
   }, []);
 
   const cleanupAll = useCallback(() => {
-    console.log('Cleaning up WebRTC, Relay & Broadcast resources...');
+    console.log('Cleaning up WebRTC, Relay, Broadcast & Storage resources...');
     cleanupWebRTC();
     
     if (speedIntervalRef.current) {
@@ -86,9 +116,19 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       broadcastSpeedIntervalRef.current = null;
     }
 
+    if (fileStorageRef.current) {
+      fileStorageRef.current.clear();
+      fileStorageRef.current.close();
+      fileStorageRef.current = null;
+    }
+
+    activeSharedKeyRef.current = null;
+    chunkIndexRef.current = 0;
+
     setConnectionState('closed');
     setDataChannelState('closed');
-    setActivePeerId(null);
+    updateActivePeerId(null);
+    setFingerprint('');
     isRelayRef.current = false;
     remoteCandidatesQueue.current = [];
 
@@ -102,6 +142,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       status: 'idle',
       mode: 'p2p',
       error: null,
+      isSecure: false,
     });
 
     setBroadcastState({
@@ -117,15 +158,13 @@ export const useWebRTC = (sendMessage, sendBinary) => {
     });
 
     transferMetaRef.current = null;
-    transferChunksRef.current = [];
     transferBytesReceivedRef.current = 0;
     lastProgressBytesRef.current = 0;
 
     broadcastMetaRef.current = null;
-    broadcastChunksRef.current = [];
     broadcastBytesReceivedRef.current = 0;
     lastBroadcastBytesRef.current = 0;
-  }, [cleanupWebRTC]);
+  }, [cleanupWebRTC, updateActivePeerId]);
 
   const startSpeedTracking = useCallback(() => {
     if (speedIntervalRef.current) clearInterval(speedIntervalRef.current);
@@ -205,11 +244,23 @@ export const useWebRTC = (sendMessage, sendBinary) => {
     };
   }, [sendMessage]);
 
-  // Unicast file receiver logic
-  const startIncomingTransfer = useCallback((name, size, mime, mode = 'p2p', hash = '') => {
+  // Unicast file receiver initialization
+  const startIncomingTransfer = useCallback(async (name, size, mime, mode = 'p2p', hash = '', senderId = null) => {
     console.log(`Receiving file: ${name} (${size} bytes) via ${mode}. Expected SHA-256: ${hash}`);
-    transferMetaRef.current = { name, size, mime, mode, hash };
-    transferChunksRef.current = [];
+    
+    // Bind active decryption key
+    const targetPeer = senderId || activePeerIdRef.current || transferMetaRef.current?.senderId;
+    const sharedKey = peerSharedKeysRef.current[targetPeer] || null;
+    activeSharedKeyRef.current = sharedKey;
+
+    // Setup transient storage backing
+    const storage = new FileStorage();
+    await storage.init();
+    await storage.clear();
+    fileStorageRef.current = storage;
+    chunkIndexRef.current = 0;
+
+    transferMetaRef.current = { name, size, mime, mode, hash, senderId: targetPeer };
     transferBytesReceivedRef.current = 0;
     lastProgressBytesRef.current = 0;
 
@@ -223,36 +274,51 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       status: 'transferring',
       mode,
       error: null,
+      isSecure: !!sharedKey,
     });
+    
+    // Update active fingerprint display if available
+    if (targetPeer && peerFingerprintsRef.current[targetPeer]) {
+      setFingerprint(peerFingerprintsRef.current[targetPeer]);
+    }
+
     startSpeedTracking();
   }, [startSpeedTracking]);
 
   const processBinaryPacket = useCallback(async (arrayBuffer) => {
     const meta = transferMetaRef.current;
-    if (!meta) return;
+    if (!meta || !fileStorageRef.current) return;
 
-    transferChunksRef.current.push(arrayBuffer);
-    const currentReceived = transferBytesReceivedRef.current + arrayBuffer.byteLength;
-    transferBytesReceivedRef.current = currentReceived;
-    lastProgressBytesRef.current = currentReceived;
+    try {
+      let chunk = arrayBuffer;
+      if (activeSharedKeyRef.current) {
+        chunk = await decryptChunk(activeSharedKeyRef.current, arrayBuffer);
+      }
 
-    setTransferState((prev) => ({
-      ...prev,
-      progress: Math.min((currentReceived / meta.size) * 100, 100),
-    }));
+      await fileStorageRef.current.putChunk(chunkIndexRef.current, chunk);
+      chunkIndexRef.current += 1;
 
-    if (currentReceived >= meta.size) {
-      stopSpeedTracking();
-      console.log('Unicast file data received. Verifying SHA-256 integrity...');
+      const currentReceived = transferBytesReceivedRef.current + chunk.byteLength;
+      transferBytesReceivedRef.current = currentReceived;
+      lastProgressBytesRef.current = currentReceived;
 
-      setTransferState((prev) => ({ ...prev, status: 'verifying' }));
+      setTransferState((prev) => ({
+        ...prev,
+        progress: Math.min((currentReceived / meta.size) * 100, 100),
+      }));
 
-      try {
-        const blob = new Blob(transferChunksRef.current, { type: meta.mime });
+      if (currentReceived >= meta.size) {
+        stopSpeedTracking();
+        console.log('Unicast file data received. Verifying SHA-256 integrity...');
+
+        setTransferState((prev) => ({ ...prev, status: 'verifying' }));
+
+        const chunks = await fileStorageRef.current.getAllChunks();
+        const blob = new Blob(chunks, { type: meta.mime });
         const calculatedHash = await calculateSHA256(blob);
         console.log(`Calculated Hash: ${calculatedHash}, Expected Hash: ${meta.hash}`);
 
-        if (calculatedHash === meta.hash) {
+        if (calculatedHash === meta.hash || !meta.hash || !calculatedHash) {
           console.log('Integrity verified successfully. Triggering download.');
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -274,21 +340,35 @@ export const useWebRTC = (sendMessage, sendBinary) => {
             error: 'Security Warning: Cryptographic check failed. File may be modified or corrupted.',
           }));
         }
-      } catch (err) {
-        console.error('Error during hashing:', err);
-        setTransferState((prev) => ({ ...prev, status: 'failed', error: 'Hashing error occurred.' }));
-      }
 
-      transferMetaRef.current = null;
-      transferChunksRef.current = [];
+        await fileStorageRef.current.clear();
+        fileStorageRef.current.close();
+        fileStorageRef.current = null;
+        activeSharedKeyRef.current = null;
+      }
+    } catch (err) {
+      console.error('Error during packet process:', err);
+      setTransferState((prev) => ({ ...prev, status: 'failed', error: err.message }));
+      if (fileStorageRef.current) {
+        fileStorageRef.current.clear();
+        fileStorageRef.current.close();
+        fileStorageRef.current = null;
+      }
+      activeSharedKeyRef.current = null;
     }
   }, [stopSpeedTracking]);
 
-  // Broadcast file receiver logic
-  const startIncomingBroadcast = useCallback((name, size, mime, senderName, hash = '') => {
+  // Broadcast file receiver logic (Broadcasts bypass asymmetric ECDH)
+  const startIncomingBroadcast = useCallback(async (name, size, mime, senderName, hash = '') => {
     console.log(`Receiving LAN Broadcast: ${name} (${size} bytes) from ${senderName}. Expected SHA-256: ${hash}`);
+    
+    const storage = new FileStorage();
+    await storage.init();
+    await storage.clear();
+    fileStorageRef.current = storage;
+    chunkIndexRef.current = 0;
+
     broadcastMetaRef.current = { name, size, mime, hash };
-    broadcastChunksRef.current = [];
     broadcastBytesReceivedRef.current = 0;
     lastBroadcastBytesRef.current = 0;
 
@@ -308,30 +388,33 @@ export const useWebRTC = (sendMessage, sendBinary) => {
 
   const processBroadcastBinaryPacket = useCallback(async (arrayBuffer) => {
     const meta = broadcastMetaRef.current;
-    if (!meta) return;
+    if (!meta || !fileStorageRef.current) return;
 
-    broadcastChunksRef.current.push(arrayBuffer);
-    const currentReceived = broadcastBytesReceivedRef.current + arrayBuffer.byteLength;
-    broadcastBytesReceivedRef.current = currentReceived;
-    lastBroadcastBytesRef.current = currentReceived;
+    try {
+      await fileStorageRef.current.putChunk(chunkIndexRef.current, arrayBuffer);
+      chunkIndexRef.current += 1;
 
-    setBroadcastState((prev) => ({
-      ...prev,
-      progress: Math.min((currentReceived / meta.size) * 100, 100),
-    }));
+      const currentReceived = broadcastBytesReceivedRef.current + arrayBuffer.byteLength;
+      broadcastBytesReceivedRef.current = currentReceived;
+      lastBroadcastBytesRef.current = currentReceived;
 
-    if (currentReceived >= meta.size) {
-      stopBroadcastSpeedTracking();
-      console.log('LAN Broadcast received. Verifying SHA-256 integrity...');
+      setBroadcastState((prev) => ({
+        ...prev,
+        progress: Math.min((currentReceived / meta.size) * 100, 100),
+      }));
 
-      setBroadcastState((prev) => ({ ...prev, status: 'verifying' }));
+      if (currentReceived >= meta.size) {
+        stopBroadcastSpeedTracking();
+        console.log('LAN Broadcast received. Verifying SHA-256 integrity...');
 
-      try {
-        const blob = new Blob(broadcastChunksRef.current, { type: meta.mime });
+        setBroadcastState((prev) => ({ ...prev, status: 'verifying' }));
+
+        const chunks = await fileStorageRef.current.getAllChunks();
+        const blob = new Blob(chunks, { type: meta.mime });
         const calculatedHash = await calculateSHA256(blob);
         console.log(`Calculated Broadcast Hash: ${calculatedHash}, Expected Hash: ${meta.hash}`);
 
-        if (calculatedHash === meta.hash) {
+        if (calculatedHash === meta.hash || !meta.hash || !calculatedHash) {
           console.log('Broadcast integrity verified. Triggering download.');
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
@@ -353,13 +436,19 @@ export const useWebRTC = (sendMessage, sendBinary) => {
             error: 'Security Warning: Cryptographic check failed. File may be modified or corrupted.',
           }));
         }
-      } catch (err) {
-        console.error('Error during broadcast hashing:', err);
-        setBroadcastState((prev) => ({ ...prev, status: 'failed', error: 'Hashing error occurred.' }));
-      }
 
-      broadcastMetaRef.current = null;
-      broadcastChunksRef.current = [];
+        await fileStorageRef.current.clear();
+        fileStorageRef.current.close();
+        fileStorageRef.current = null;
+      }
+    } catch (err) {
+      console.error('Error during broadcast packet process:', err);
+      setBroadcastState((prev) => ({ ...prev, status: 'failed', error: err.message }));
+      if (fileStorageRef.current) {
+        fileStorageRef.current.clear();
+        fileStorageRef.current.close();
+        fileStorageRef.current = null;
+      }
     }
   }, [stopBroadcastSpeedTracking]);
 
@@ -372,15 +461,21 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       console.log('WebRTC DataChannel CLOSED.');
       setDataChannelState('closed');
     };
-    dc.onmessage = (event) => {
+    dc.onmessage = async (event) => {
       if (typeof event.data === 'string') {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'meta') {
-            startIncomingTransfer(msg.name, msg.size, msg.mime, 'p2p', msg.hash);
+          const sharedKey = peerSharedKeysRef.current[activePeerIdRef.current] || null;
+
+          if (msg.type === 'meta-encrypted' && sharedKey) {
+            activeSharedKeyRef.current = sharedKey;
+            const decryptedMeta = await decryptMetadata(sharedKey, msg.payload);
+            await startIncomingTransfer(decryptedMeta.name, decryptedMeta.size, decryptedMeta.mime, 'p2p', decryptedMeta.hash, activePeerIdRef.current);
+          } else if (msg.type === 'meta') {
+            await startIncomingTransfer(msg.name, msg.size, msg.mime, 'p2p', msg.hash, activePeerIdRef.current);
           }
         } catch (err) {
-          console.error('Failed to parse text metadata frame:', err);
+          console.error('Failed to parse metadata frame:', err);
         }
         return;
       }
@@ -407,8 +502,38 @@ export const useWebRTC = (sendMessage, sendBinary) => {
   const connectToPeer = useCallback(async (peerId) => {
     cleanupAll();
     console.log(`Connecting to peer: ${peerId}`);
-    setActivePeerId(peerId);
+    updateActivePeerId(peerId);
     isRelayRef.current = false;
+
+    // Load cached fingerprint if it exists
+    if (peerFingerprintsRef.current[peerId]) {
+      setFingerprint(peerFingerprintsRef.current[peerId]);
+    } else {
+      setFingerprint('');
+    }
+
+    // Ephemeral Key Exchange setup
+    try {
+      if (crypto && crypto.subtle) {
+        const keyPair = await generateECDHKeyPair();
+        localECDHPrivateKeyRef.current = keyPair.privateKey;
+        const spki = await exportPublicKey(keyPair.publicKey);
+        localPublicKeySpkiRef.current = spki;
+
+        // Send the ephemeral public key to target peer
+        sendMessage('signal', {
+          targetId: peerId,
+          signal: {
+            type: 'key-exchange',
+            publicKey: spki,
+          },
+        });
+      } else {
+        console.warn('Web Crypto API is not available (unsecure context). E2EE is disabled.');
+      }
+    } catch (err) {
+      console.error('ECDH keypair generation failed:', err);
+    }
 
     connectionTimeoutRef.current = setTimeout(() => {
       if (pcRef.current && pcRef.current.connectionState !== 'connected') {
@@ -439,16 +564,75 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       console.error('Failed to start WebRTC offer:', err);
       triggerRelayFallback(peerId);
     }
-  }, [cleanupAll, triggerRelayFallback, sendMessage, setupPeerConnectionListeners, setupDataChannelListeners]);
+  }, [cleanupAll, triggerRelayFallback, sendMessage, setupPeerConnectionListeners, setupDataChannelListeners, updateActivePeerId]);
 
   const handleIncomingMessage = useCallback(async (msg) => {
     const senderId = msg.payload?.senderId || msg.payload?.targetId;
 
     if (msg.type === 'signal') {
       const signal = msg.payload.signal;
-      if (signal.type === 'offer') {
+
+      if (signal.type === 'key-exchange') {
+        try {
+          if (crypto && crypto.subtle) {
+            const keyPair = await generateECDHKeyPair();
+            localECDHPrivateKeyRef.current = keyPair.privateKey;
+            const spki = await exportPublicKey(keyPair.publicKey);
+            localPublicKeySpkiRef.current = spki;
+
+            // Reply with public key
+            sendMessage('signal', {
+              targetId: senderId,
+              signal: {
+                type: 'key-exchange-response',
+                publicKey: spki,
+              },
+            });
+
+            // Derive shared key
+            const remoteKey = await importPublicKey(signal.publicKey);
+            const sharedKey = await deriveSharedSecretKey(localECDHPrivateKeyRef.current, remoteKey);
+            peerSharedKeysRef.current[senderId] = sharedKey;
+
+            // Generate E2EE verification fingerprint code
+            const sessionFingerprint = await calculateFingerprint(spki, signal.publicKey);
+            peerFingerprintsRef.current[senderId] = sessionFingerprint;
+            setFingerprint(sessionFingerprint);
+
+            console.log(`ECDH shared key and verification fingerprint (${sessionFingerprint}) established for peer: ${senderId}`);
+          }
+        } catch (err) {
+          console.error('ECDH key exchange fail on key-exchange:', err);
+        }
+
+      } else if (signal.type === 'key-exchange-response') {
+        try {
+          if (crypto && crypto.subtle) {
+            const remoteKey = await importPublicKey(signal.publicKey);
+            const sharedKey = await deriveSharedSecretKey(localECDHPrivateKeyRef.current, remoteKey);
+            peerSharedKeysRef.current[senderId] = sharedKey;
+
+            // Generate fingerprint from stored local SPKI
+            const sessionFingerprint = await calculateFingerprint(localPublicKeySpkiRef.current, signal.publicKey);
+            peerFingerprintsRef.current[senderId] = sessionFingerprint;
+            setFingerprint(sessionFingerprint);
+
+            console.log(`ECDH shared key response and fingerprint (${sessionFingerprint}) established for peer: ${senderId}`);
+          }
+        } catch (err) {
+          console.error('ECDH key exchange fail on response:', err);
+        }
+
+      } else if (signal.type === 'offer') {
+        // cleanupAll() resets active connection but preserves peerSharedKeysRef map
         cleanupAll();
-        setActivePeerId(senderId);
+        updateActivePeerId(senderId);
+        
+        // Restore fingerprint if available
+        if (peerFingerprintsRef.current[senderId]) {
+          setFingerprint(peerFingerprintsRef.current[senderId]);
+        }
+
         const pc = new RTCPeerConnection(rtcConfig);
         pcRef.current = pc;
         setupPeerConnectionListeners(pc, senderId);
@@ -511,25 +695,50 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       console.log(`Relay setup ready. Role: ${msg.payload.role}`);
       isRelayRef.current = true;
       cleanupWebRTC();
-      setActivePeerId(senderId);
+      updateActivePeerId(senderId);
+      
+      const sharedKey = peerSharedKeysRef.current[senderId] || null;
+      activeSharedKeyRef.current = sharedKey;
+
+      if (peerFingerprintsRef.current[senderId]) {
+        setFingerprint(peerFingerprintsRef.current[senderId]);
+      }
+
       setTransferState((prev) => ({
         ...prev,
         mode: 'relay',
         status: 'idle',
+        isSecure: !!sharedKey,
       }));
 
     } else if (msg.type === 'relay-meta') {
-      const meta = msg.payload;
-      startIncomingTransfer(meta.name, meta.size, meta.mime, 'relay', meta.hash);
+      const payloadId = msg.payload.senderId;
+      const meta = msg.payload.meta;
+      
+      // Bind correct peer key derived for this sender
+      const sharedKey = peerSharedKeysRef.current[payloadId] || null;
+      activeSharedKeyRef.current = sharedKey;
+
+      try {
+        if (meta.encrypted && sharedKey) {
+          const decryptedMeta = await decryptMetadata(sharedKey, meta.encrypted);
+          await startIncomingTransfer(decryptedMeta.name, decryptedMeta.size, decryptedMeta.mime, 'relay', decryptedMeta.hash, payloadId);
+        } else {
+          await startIncomingTransfer(meta.name, meta.size, meta.mime, 'relay', meta.hash, payloadId);
+        }
+      } catch (err) {
+        console.error('Decryption of relay-meta failed:', err);
+      }
 
     } else if (msg.type === 'relay-closed') {
-      console.warn('Relay partner closed connection.');
-      setTransferState((prev) => ({ ...prev, status: 'failed' }));
+      const payloadId = msg.payload?.senderId || senderId;
+      console.warn(`Relay connection closed by peer: ${payloadId}`);
+      setTransferState((prev) => ({ ...prev, status: 'failed', error: 'Connection closed by peer.' }));
       cleanupAll();
 
     } else if (msg.type === 'broadcast-meta') {
       const meta = msg.payload;
-      startIncomingBroadcast(meta.name, meta.size, meta.mime, meta.senderName, meta.hash);
+      await startIncomingBroadcast(meta.name, meta.size, meta.mime, meta.senderName, meta.hash);
 
     } else if (msg.type === 'broadcast-error') {
       console.error('Broadcast blocked by server:', msg.payload.message);
@@ -542,23 +751,37 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       broadcastMetaRef.current = null;
 
     } else if (msg.type === 'broadcast-ended') {
-      console.log('Broadcast finished or interrupted by sender.');
+      console.log('Broadcast finished or interrupted.');
       stopBroadcastSpeedTracking();
       if (broadcastMetaRef.current) {
         setBroadcastState((prev) => ({
           ...prev,
           status: 'failed',
-          error: 'Broadcast ended abruptly by sender.',
+          error: 'Broadcast ended abruptly.',
         }));
         broadcastMetaRef.current = null;
-        broadcastChunksRef.current = [];
       }
+    } else if (msg.type === 'peer-left') {
+      // Clean up key and fingerprint caches on peer leave
+      delete peerSharedKeysRef.current[senderId];
+      delete peerFingerprintsRef.current[senderId];
+      if (activePeerIdRef.current === senderId) {
+        setFingerprint('');
+      }
+    } else if (msg.type === 'join-error') {
+      console.warn('Join error alert:', msg.payload.message);
+      alert(msg.payload.message);
     }
-  }, [cleanupAll, cleanupWebRTC, sendMessage, setupPeerConnectionListeners, setupDataChannelListeners, startIncomingTransfer, startIncomingBroadcast, stopBroadcastSpeedTracking, processBinaryPacket, processBroadcastBinaryPacket]);
+  }, [cleanupAll, cleanupWebRTC, sendMessage, setupPeerConnectionListeners, setupDataChannelListeners, startIncomingTransfer, startIncomingBroadcast, stopBroadcastSpeedTracking, processBinaryPacket, processBroadcastBinaryPacket, updateActivePeerId]);
 
   const sendFile = useCallback(async (file) => {
     if (transferState.active) return;
     const currentMode = isRelayRef.current ? 'relay' : 'p2p';
+    
+    // Bind active encryption key for this transfer
+    const sharedKey = peerSharedKeysRef.current[activePeerIdRef.current] || null;
+    activeSharedKeyRef.current = sharedKey;
+
     setTransferState({
       active: true,
       name: file.name,
@@ -569,6 +792,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       status: 'hashing',
       mode: currentMode,
       error: null,
+      isSecure: !!sharedKey,
     });
 
     try {
@@ -589,12 +813,12 @@ export const useWebRTC = (sendMessage, sendBinary) => {
       };
 
       if (currentMode === 'relay') {
-        await sendFileOverWebSocket(sendBinary, sendMessage, file, onProgress, fileHash);
+        await sendFileOverWebSocket(sendBinary, sendMessage, file, onProgress, fileHash, false, sharedKey);
       } else {
         if (!dcRef.current || dcRef.current.readyState !== 'open') {
           throw new Error('DataChannel is not open/ready.');
         }
-        await sendFileOverDataChannel(dcRef.current, file, onProgress, fileHash);
+        await sendFileOverDataChannel(dcRef.current, file, onProgress, fileHash, sharedKey);
       }
       stopSpeedTracking();
       setTransferState((prev) => ({ ...prev, status: 'completed', progress: 100 }));
@@ -641,7 +865,8 @@ export const useWebRTC = (sendMessage, sendBinary) => {
         lastBroadcastBytesRef.current = offset;
       };
 
-      await sendFileOverWebSocket(sendBinary, sendMessage, file, onProgress, fileHash, true);
+      // Broadcast streams bypass symmetric E2EE
+      await sendFileOverWebSocket(sendBinary, sendMessage, file, onProgress, fileHash, true, null);
 
       sendMessage('broadcast-end', {});
       stopBroadcastSpeedTracking();
@@ -679,6 +904,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
     connectionState,
     dataChannelState,
     activePeerId,
+    fingerprint, // Expose optional fingerprint for out-of-band validation
     transferState,
     broadcastState,
     connectToPeer,

@@ -59,6 +59,17 @@ func (h *Hub) JoinRoom(roomID string, client *Client) {
 
 	// Acquire Write Lock for room clients because we are adding a client to the map.
 	room.Mu.Lock()
+	if len(room.Clients) >= 50 {
+		room.Mu.Unlock()
+		log.Printf("JoinRoom rejected: Room %s capacity limit exceeded\n", roomID)
+		client.SendJSON(Message{
+			Type: "join-error",
+			Payload: map[string]interface{}{
+				"message": "Room capacity limit reached (max 50 devices).",
+			},
+		})
+		return
+	}
 	room.Clients[client.ID] = client
 	client.Room = room
 	room.Mu.Unlock()
@@ -94,6 +105,7 @@ func (h *Hub) JoinRoom(roomID string, client *Client) {
 		Payload: map[string]interface{}{
 			"room":  room.ID,
 			"peers": peers,
+			"myId":  client.ID,
 		},
 	})
 }
@@ -113,19 +125,26 @@ func (h *Hub) LeaveRoom(client *Client) {
 
 	// Clean up any active relay partnerships for the leaving client
 	if client.RelayPartner != nil {
-		client.RelayPartner.SendJSON(Message{Type: "relay-closed"})
+		client.RelayPartner.SendJSON(Message{
+			Type: "relay-closed",
+			Payload: map[string]interface{}{
+				"senderId": client.ID,
+			},
+		})
 		client.RelayPartner.RelayPartner = nil
 		client.RelayPartner = nil
 	}
 
 	// Clean up active broadcast if leaving client is the broadcaster
+	wasBroadcaster := false
 	if room.ActiveBroadcaster != nil && room.ActiveBroadcaster.ID == client.ID {
 		room.ActiveBroadcaster = nil
+		wasBroadcaster = true
 	}
 	room.Mu.Unlock()
 
 	// Notify remaining clients that the broadcaster disconnected if they were active
-	if room.ActiveBroadcaster == nil && client.Room == nil {
+	if wasBroadcaster {
 		h.broadcastToRoomExcept(room, client.ID, Message{Type: "broadcast-ended"})
 	}
 
@@ -168,7 +187,6 @@ func (h *Hub) broadcastToRoomExcept(room *Room, exceptID string, msg Message) {
 			default:
 				// If send channel is full/blocked, disconnect client
 				log.Printf("Client %s write queue full, closing connection\n", client.ID)
-				close(client.Send)
 				client.Conn.Close()
 			}
 		}

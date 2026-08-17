@@ -3,6 +3,11 @@ package main
 import (
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"landrop-server/internal/ws"
 
@@ -10,12 +15,89 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var (
+	connMutex      sync.Mutex
+	ipConnections  = make(map[string][]time.Time)
+	allowedOrigins []string
+)
+
+func init() {
+	originsEnv := os.Getenv("ALLOWED_WS_ORIGINS")
+	if originsEnv != "" {
+		for _, org := range strings.Split(originsEnv, ",") {
+			trimmed := strings.TrimSpace(org)
+			if trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
+		log.Printf("Configured allowed WebSocket origins: %v\n", allowedOrigins)
+	}
+}
+
+// Rate limit check: max 5 connections per 10 seconds per IP
+func rateLimitCheck(ip string) bool {
+	connMutex.Lock()
+	defer connMutex.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-10 * time.Second)
+
+	// Filter out expired connection timestamps
+	var active []time.Time
+	for _, t := range ipConnections[ip] {
+		if t.After(cutoff) {
+			active = append(active, t)
+		}
+	}
+
+	if len(active) >= 5 {
+		return false
+	}
+
+	active = append(active, now)
+	ipConnections[ip] = active
+	return true
+}
+
+func isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		// Reject empty origin in production if an explicit allowlist is configured
+		return len(allowedOrigins) == 0
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+
+	// Always allow localhost and local LAN IPs for cross-device development/testing
+	if host == "localhost" || host == "127.0.0.1" || strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "10.") || strings.HasPrefix(host, "172.16.") {
+		return true
+	}
+
+	// Check environment variable allowlist
+	for _, allowed := range allowedOrigins {
+		if u.String() == allowed || host == allowed || strings.HasSuffix(host, "."+allowed) {
+			return true
+		}
+	}
+
+	// If no ALLOWED_WS_ORIGINS is configured, default to allowing pages.dev subdomains
+	if len(allowedOrigins) == 0 {
+		return strings.HasSuffix(host, ".pages.dev")
+	}
+
+	return false
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	// Accept connections from any origin for simplicity during development/cross-device tests.
+	// Validate origin to prevent CSRF / unauthorized connection hijacking
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		origin := r.Header.Get("Origin")
+		return isAllowedOrigin(origin)
 	},
 }
 
@@ -39,6 +121,13 @@ func main() {
 	hub := ws.NewHub()
 
 	r.GET("/ws", func(c *gin.Context) {
+		ip := c.ClientIP()
+		if !rateLimitCheck(ip) {
+			log.Printf("Rate limit exceeded for IP: %s\n", ip)
+			c.String(http.StatusTooManyRequests, "Too many requests. Please try again later.")
+			return
+		}
+
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			log.Printf("Failed to upgrade connection: %v\n", err)
@@ -47,7 +136,6 @@ func main() {
 
 		name := c.DefaultQuery("name", "Anonymous Device")
 		device := c.DefaultQuery("device", "Unknown Device")
-		ip := c.ClientIP()
 
 		log.Printf("New connection request: Name: %s, Device: %s, IP: %s\n", name, device, ip)
 

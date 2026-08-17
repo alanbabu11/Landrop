@@ -43,6 +43,7 @@ function MainApp() {
   const {
     connectionState,
     activePeerId,
+    fingerprint,
     transferState,
     broadcastState,
     connectToPeer,
@@ -98,6 +99,7 @@ function MainApp() {
           peer={activePeer}
           connectionState={connectionState}
           transferState={transferState}
+          fingerprint={fingerprint}
           onDisconnect={handleDisconnect}
           onSendFile={sendFile}
         />

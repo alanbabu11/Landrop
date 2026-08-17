@@ -1,11 +1,12 @@
 import React, { useRef, useState } from 'react';
-import { ArrowLeft, UploadCloud, File, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-react';
+import { ArrowLeft, UploadCloud, File, AlertCircle, CheckCircle2, RefreshCw, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { formatSize, formatSpeed } from '../utils/fileTransfer';
 
 export const Room = ({
   peer,
   connectionState,
   transferState,
+  fingerprint,
   onDisconnect,
   onSendFile,
 }) => {
@@ -96,13 +97,21 @@ export const Room = ({
         </span>
       </div>
 
-      <div style={{ padding: '1rem', background: 'rgba(0, 0, 0, 0.15)', borderRadius: '16px', border: '1px solid var(--panel-border)', marginBottom: '1.5rem' }}>
+      <div style={{ padding: '1rem', background: 'rgba(0, 0, 0, 0.15)', borderRadius: '16px', border: '1px solid var(--panel-border)', marginBottom: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           {status.icon}
           <span style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>
             {status.text}
           </span>
         </div>
+        {fingerprint && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', paddingLeft: '28px', borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.5rem', marginTop: '0.25rem' }}>
+            <ShieldCheck size={14} className="text-secondary" />
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              Session Verification Code: <strong style={{ color: 'var(--secondary)', letterSpacing: '1px' }}>{fingerprint}</strong> (Verify code matches on peer screen to confirm no active MitM)
+            </span>
+          </div>
+        )}
       </div>
 
       <div
@@ -137,7 +146,19 @@ export const Room = ({
             <File className="text-secondary" size={24} />
             <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
               <p style={{ fontWeight: '600', fontSize: '0.95rem' }}>{transferState.name}</p>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{formatSize(transferState.size)}</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{formatSize(transferState.size)}</span>
+                <span style={{ color: 'rgba(255, 255, 255, 0.15)', fontSize: '0.8rem' }}>•</span>
+                {transferState.isSecure ? (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--secondary)', display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontWeight: '500' }}>
+                    <ShieldCheck size={12} /> E2EE (AES-GCM) Secure {fingerprint && `[Code: ${fingerprint}]`}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                    <ShieldAlert size={12} /> Standard Local Link
+                  </span>
+                )}
+              </div>
             </div>
             {transferState.status === 'completed' && (
               <CheckCircle2 style={{ color: '#00ff66' }} size={24} />

@@ -45,8 +45,9 @@ type Client struct {
 	Room         *Room
 	Conn         *websocket.Conn
 	Send         chan WSMessage
-	RelayPartner *Client // Bi-directional pointer to partner for fallback relay channel
-	DefaultRoom  string  // Initial IP-based room to reset back to
+	RelayPartner *Client       // Bi-directional pointer to partner for fallback relay channel
+	DefaultRoom  string        // Initial IP-based room to reset back to
+	done         chan struct{} // Clean shutdown channel
 }
 
 // NewClient initializes a new Client.
@@ -59,6 +60,7 @@ func NewClient(hub *Hub, conn *websocket.Conn, name, device, defaultRoom string)
 		Conn:        conn,
 		Send:        make(chan WSMessage, 1024), // Large channel for binary frame buffering
 		DefaultRoom: defaultRoom,
+		done:        make(chan struct{}),
 	}
 }
 
@@ -82,6 +84,7 @@ func (c *Client) ReadPump() {
 	defer func() {
 		c.Hub.LeaveRoom(c)
 		c.Conn.Close()
+		close(c.done)
 	}()
 
 	c.Conn.SetReadLimit(maxMessageSize)
@@ -115,7 +118,8 @@ func (c *Client) ReadPump() {
 						select {
 						case peer.Send <- WSMessage{Type: websocket.BinaryMessage, Data: message}:
 						default:
-							log.Printf("Peer %s queue full during broadcast, dropping binary frame\n", peer.ID)
+							log.Printf("Peer %s queue full during broadcast, disconnecting\n", peer.ID)
+							peer.Conn.Close()
 						}
 					}
 				}
@@ -124,7 +128,8 @@ func (c *Client) ReadPump() {
 				select {
 				case partner.Send <- WSMessage{Type: websocket.BinaryMessage, Data: message}:
 				default:
-					log.Printf("Partner %s queue full, dropping binary frame\n", partner.ID)
+					log.Printf("Partner %s queue full, disconnecting\n", partner.ID)
+					partner.Conn.Close()
 				}
 			} else {
 				log.Println("Received binary frame but no relay partner or broadcast is active")
@@ -138,8 +143,23 @@ func (c *Client) ReadPump() {
 			continue
 		}
 
+		// Message type validation (security hardening)
+		if !isValidMessageType(msg.Type) {
+			log.Printf("Rejected message with invalid type: %s\n", msg.Type)
+			continue
+		}
+
 		c.handleIncomingMessage(msg)
 	}
+}
+
+// Helper to validate message types.
+func isValidMessageType(t string) bool {
+	switch t {
+	case "join-room", "signal", "relay-request", "relay-meta", "broadcast-start", "broadcast-end":
+		return true
+	}
+	return false
 }
 
 // WritePump pumps messages from the client's send channel to the websocket connection.
@@ -152,18 +172,16 @@ func (c *Client) WritePump() {
 
 	for {
 		select {
-		case message, ok := <-c.Send:
+		case message := <-c.Send:
 			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				_ = c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
 			// Send exact frame type (TextMessage or BinaryMessage)
 			err := c.Conn.WriteMessage(message.Type, message.Data)
 			if err != nil {
 				return
 			}
+
+		case <-c.done:
+			return
 
 		case <-ticker.C:
 			_ = c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
@@ -185,6 +203,16 @@ func (c *Client) handleIncomingMessage(msg Message) {
 			}
 		}
 		if code != "" {
+			if len(code) > 20 || !isValidRoomCode(code) {
+				log.Printf("Rejected invalid room code join request: %s\n", code)
+				c.SendJSON(Message{
+					Type: "join-error",
+					Payload: map[string]interface{}{
+						"message": "Invalid room code format. Max 20 alphanumeric characters.",
+					},
+				})
+				return
+			}
 			c.Hub.JoinRoom(code, c)
 		} else {
 			c.Hub.JoinRoom(c.DefaultRoom, c)
@@ -256,8 +284,11 @@ func (c *Client) handleIncomingMessage(msg Message) {
 
 			if partner != nil {
 				partner.SendJSON(Message{
-					Type:    "relay-meta",
-					Payload: msg.Payload,
+					Type: "relay-meta",
+					Payload: map[string]interface{}{
+						"senderId": c.ID,
+						"meta":     msg.Payload,
+					},
 				})
 			}
 		}
@@ -289,6 +320,7 @@ func (c *Client) handleIncomingMessage(msg Message) {
 						"name":       msg.Payload.(map[string]interface{})["name"],
 						"size":       msg.Payload.(map[string]interface{})["size"],
 						"mime":       msg.Payload.(map[string]interface{})["mime"],
+						"hash":       msg.Payload.(map[string]interface{})["hash"],
 					},
 				})
 			}
@@ -297,17 +329,31 @@ func (c *Client) handleIncomingMessage(msg Message) {
 	case "broadcast-end":
 		if c.Room != nil {
 			c.Room.Mu.Lock()
+			wasBroadcaster := false
 			if c.Room.ActiveBroadcaster == c {
 				c.Room.ActiveBroadcaster = nil
+				wasBroadcaster = true
 				log.Printf("Client %s finished broadcast in room %s\n", c.ID, c.Room.ID)
-				// Broadcast notification that broadcast ended
+			}
+			c.Room.Mu.Unlock()
+
+			if wasBroadcaster {
 				c.Hub.broadcastToRoomExcept(c.Room, c.ID, Message{
 					Type: "broadcast-ended",
 				})
 			}
-			c.Room.Mu.Unlock()
 		}
 	}
+}
+
+// Helper to validate room codes.
+func isValidRoomCode(code string) bool {
+	for _, r := range code {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '.' || r == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 // Helper to generate a random client/room ID.
