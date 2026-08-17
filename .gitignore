@@ -1,0 +1,11 @@
+# Compiled binaries
+/server
+/cmd/server/server
+
+# Node modules and build output
+/frontend/node_modules/
+/frontend/dist/
+
+# OS specific files
+.DS_Store
+Thumbs.db
