@@ -263,3 +263,68 @@
   font-size: 2.5rem;
   color: var(--text-muted);
 }
+
+/* Responsive / Mobile View optimization */
+@media (max-width: 600px) {
+  .app-layout {
+    padding: 1rem;
+  }
+
+  .glass-container {
+    padding: 1.5rem !important;
+    border-radius: 16px !important;
+  }
+
+  .header {
+    margin-bottom: 1.5rem;
+  }
+
+  .logo-text {
+    font-size: 1.4rem;
+  }
+
+  .connection-status {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.75rem;
+  }
+
+  .room-display {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+    text-align: left;
+  }
+
+  .room-display p {
+    max-width: 100% !important;
+  }
+
+  .room-display-code {
+    font-size: 1.25rem;
+    word-break: break-all;
+  }
+
+  .device-grid {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 1rem;
+  }
+
+  .device-card {
+    padding: 1rem;
+  }
+
+  .device-icon-wrapper {
+    width: 44px;
+    height: 44px;
+  }
+
+  .room-actions-panel {
+    margin-top: 2rem !important;
+    padding-top: 1.5rem !important;
+  }
+
+  .room-actions-panel > div {
+    grid-template-columns: 1fr !important;
+    gap: 1rem !important;
+  }
+}
