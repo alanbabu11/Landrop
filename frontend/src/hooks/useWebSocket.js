@@ -6,20 +6,6 @@ const getRandomName = () => {
   return `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${nouns[Math.floor(Math.random() * nouns.length)]}`;
 };
 
-const getUsername = () => {
-  let name = localStorage.getItem('landrop_username');
-  if (!name) {
-    name = window.prompt('Enter your display name for LANDrop:', '');
-    if (!name || !name.trim()) {
-      name = getRandomName();
-    } else {
-      name = name.trim();
-      localStorage.setItem('landrop_username', name);
-    }
-  }
-  return name;
-};
-
 const getDeviceDetails = () => {
   const ua = navigator.userAgent;
   let browser = 'Web Browser';
@@ -45,7 +31,7 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
   const [peers, setPeers] = useState([]);
   const socketRef = useRef(null);
   
-  const clientName = useRef(getUsername());
+  const clientName = useRef(localStorage.getItem('landrop_username') || getRandomName());
   const deviceDetails = useRef(getDeviceDetails().summary);
 
   const sendMessage = useCallback((type, payload) => {
@@ -65,12 +51,8 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
   }, []);
 
   const connect = useCallback(() => {
-    setSocketStatus('connecting');
-    const wsUrl = `${serverUrl}?name=${encodeURIComponent(clientName.current)}&device=${encodeURIComponent(deviceDetails.current)}`;
-    console.log(`Connecting to WebSocket at: ${wsUrl}`);
-    
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = 'arraybuffer'; // Setup binary frames directly as ArrayBuffer
+    const ws = new WebSocket(`${serverUrl}?name=${encodeURIComponent(clientName.current)}&device=${encodeURIComponent(deviceDetails.current)}`);
+    ws.binaryType = 'arraybuffer';
     socketRef.current = ws;
 
     ws.onopen = () => {
@@ -79,7 +61,6 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
     };
 
     ws.onmessage = (event) => {
-      // Route raw binary frames to the binary handler callback
       if (event.data instanceof ArrayBuffer) {
         if (onBinaryReceived) {
           onBinaryReceived(event.data);
@@ -111,7 +92,6 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
               break;
               
             default:
-              // Forward other signaling/relay events to the message handler
               if (onMessageReceived) {
                 onMessageReceived(msg);
               }

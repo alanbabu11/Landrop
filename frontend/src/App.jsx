@@ -3,9 +3,10 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useWebRTC } from './hooks/useWebRTC';
 import { Landing } from './pages/Landing';
 import { Room } from './pages/Room';
+import { Onboarding } from './pages/Onboarding';
 import './App.css';
 
-function App() {
+function MainApp() {
   const [activePeer, setActivePeer] = useState(null);
   const signalCallbackRef = useRef(null);
 
@@ -15,16 +16,10 @@ function App() {
     }
   }, []);
 
-  // Determine WebSocket backend URL (uses VITE_WS_URL env var if set, otherwise falls back dynamically for local LAN testing)
-  const getWSUrl = () => {
-    if (import.meta.env.VITE_WS_URL) {
-      return import.meta.env.VITE_WS_URL;
-    }
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const backendHost = window.location.hostname === 'localhost' ? 'localhost:8000' : `${window.location.hostname}:8000`;
-    return `${wsProtocol}//${backendHost}/ws`;
-  };
-  const wsUrl = getWSUrl();
+  // Determine WebSocket backend URL dynamically to support cross-device testing on local LAN
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const backendHost = window.location.hostname === 'localhost' ? 'localhost:8000' : `${window.location.hostname}:8000`;
+  const wsUrl = import.meta.env.VITE_WS_URL || `${wsProtocol}//${backendHost}/ws`;
 
   // Ref to hold handleIncomingBinary to avoid dependency cycles
   const binaryCallbackRef = useRef(null);
@@ -121,6 +116,20 @@ function App() {
       )}
     </div>
   );
+}
+
+function App() {
+  const [username, setUsername] = useState(() => localStorage.getItem('landrop_username'));
+
+  if (!username) {
+    return (
+      <div className="app-layout">
+        <Onboarding onSaveName={(name) => setUsername(name)} />
+      </div>
+    );
+  }
+
+  return <MainApp />;
 }
 
 export default App;
