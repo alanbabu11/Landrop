@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Monitor, Smartphone, Laptop, Radio, ArrowRight, CheckCircle2, AlertCircle, RefreshCw, Edit2 } from 'lucide-react';
+import { Monitor, Smartphone, Laptop, Radio, ArrowRight, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 import { formatSize, formatSpeed } from '../utils/fileTransfer';
 
 const getDeviceIcon = (deviceStr) => {
@@ -39,12 +39,8 @@ export const Landing = ({
   myDevice,
   broadcastState,
   onBroadcastFile,
-  onUpdateName,
 }) => {
   const [manualCode, setManualCode] = useState('');
-  const [welcomeInput, setWelcomeInput] = useState('');
-  const [isEditingName, setIsEditingName] = useState(false);
-  const [editNameInput, setEditNameInput] = useState(myName || '');
   const broadcastInputRef = useRef(null);
 
   const handleJoinCodeSubmit = (e) => {
@@ -62,63 +58,17 @@ export const Landing = ({
   };
 
   const handleCreateRoom = () => {
+    // Generate random secure 6-digit room code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     joinRoom(code);
   };
 
   const handleLeavePrivateRoom = () => {
+    // Send empty code to rejoin IP-based local network room
     joinRoom('');
   };
 
-  const handleWelcomeSubmit = (e) => {
-    e.preventDefault();
-    if (welcomeInput.trim()) {
-      onUpdateName(welcomeInput.trim());
-    }
-  };
-
-  const handleSaveName = (e) => {
-    e.preventDefault();
-    if (editNameInput.trim()) {
-      onUpdateName(editNameInput.trim());
-      setIsEditingName(false);
-    }
-  };
-
   const inPrivateRoom = !isIP(roomId);
-
-  // Render Welcome Prompt Screen if no username has been chosen
-  if (!myName) {
-    return (
-      <div className="glass-container glow-effect" style={{ maxWidth: '440px', padding: '2.5rem 2rem', textAlign: 'center' }}>
-        <div className="logo-container" style={{ justifyContent: 'center', marginBottom: '2rem' }}>
-          <Radio className="text-secondary animate-pulse" size={40} />
-          <span className="logo-text" style={{ fontSize: '2.2rem' }}>LANDrop</span>
-        </div>
-        <h3 style={{ fontSize: '1.25rem', fontWeight: '700', marginBottom: '0.75rem', color: 'var(--text-primary)' }}>
-          Welcome to LANDrop
-        </h3>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '2rem', lineHeight: '1.4' }}>
-          Fast, secure, local network file sharing. Choose a display name to begin discovering other devices.
-        </p>
-        <form onSubmit={handleWelcomeSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <input
-            type="text"
-            className="input-field"
-            placeholder="Choose display name (e.g. Alan)"
-            value={welcomeInput}
-            onChange={(e) => setWelcomeInput(e.target.value)}
-            required
-            maxLength={20}
-            style={{ textAlign: 'center' }}
-          />
-          <button type="submit" className="btn btn-primary" style={{ width: '100%', padding: '0.85rem' }}>
-            Enter Room <ArrowRight size={18} />
-          </button>
-        </form>
-      </div>
-    );
-  }
 
   return (
     <div className="glass-container glow-effect">
@@ -135,41 +85,10 @@ export const Landing = ({
 
       <div style={{ marginBottom: '2rem' }}>
         <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>You are visible as:</p>
-        
-        {isEditingName ? (
-          <form onSubmit={handleSaveName} style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem', maxWidth: '320px' }}>
-            <input
-              type="text"
-              className="input-field"
-              value={editNameInput}
-              onChange={(e) => setEditNameInput(e.target.value)}
-              required
-              maxLength={20}
-              style={{ padding: '0.5rem 0.75rem', fontSize: '0.95rem' }}
-              autoFocus
-            />
-            <button type="submit" className="btn btn-primary" style={{ padding: '0 1rem', fontSize: '0.85rem' }}>
-              Save
-            </button>
-            <button type="button" className="btn btn-secondary" onClick={() => setIsEditingName(false)} style={{ padding: '0 0.75rem', fontSize: '0.85rem' }}>
-              Cancel
-            </button>
-          </form>
-        ) : (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
-            <h3 style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)' }}>
-              {myName}
-            </h3>
-            <button
-              onClick={() => { setEditNameInput(myName); setIsEditingName(true); }}
-              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0.2rem', display: 'flex', alignItems: 'center' }}
-              title="Edit display name"
-            >
-              <Edit2 size={15} />
-            </button>
-          </div>
-        )}
-        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>{myDevice}</p>
+        <h3 style={{ fontSize: '1.25rem', fontWeight: '700', color: 'var(--text-primary)', marginTop: '0.25rem' }}>
+          {myName}
+        </h3>
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{myDevice}</p>
       </div>
 
       <div className="room-display">
@@ -289,7 +208,7 @@ export const Landing = ({
         )}
       </div>
 
-      {/* Private Room Channels */}
+      {/* Private Room Channels (Separated Create and Join actions) */}
       <div className="room-actions-panel" style={{ marginTop: '3rem', paddingTop: '2rem', borderTop: '1px solid rgba(255, 255, 255, 0.05)' }}>
         <h4 style={{ fontSize: '1.0rem', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '1.25rem' }}>
           Private Room Channels
@@ -333,7 +252,7 @@ export const Landing = ({
             <div>
               <h5 style={{ fontSize: '0.9rem', fontWeight: '600', color: 'var(--text-secondary)' }}>Join a Private Room</h5>
               <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', lineHeight: '1.3' }}>
-                Enter the private room code shared by another user to connect to their custom transfer session.
+                Enter the private room code shared by another user to immediately connect to their custom transfer session.
               </p>
             </div>
             <div style={{ display: 'flex', gap: '0.5rem' }}>
