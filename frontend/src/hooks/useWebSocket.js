@@ -1,11 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const getRandomName = () => {
-  const adjectives = ['Cosmic', 'Nebula', 'Quantum', 'Glitch', 'Cyber', 'Solar', 'Hydra', 'Vortex', 'Neon', 'Lunar'];
-  const nouns = ['Pioneer', 'Wanderer', 'Stalker', 'Ranger', 'Specter', 'Drifter', 'Falcon', 'Titan', 'Echo', 'Phoenix'];
-  return `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${nouns[Math.floor(Math.random() * nouns.length)]}`;
-};
-
 const getDeviceDetails = () => {
   const ua = navigator.userAgent;
   let browser = 'Web Browser';
@@ -25,13 +19,11 @@ const getDeviceDetails = () => {
   return { browser, os, summary: `${browser} on ${os}` };
 };
 
-export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => {
-  const [socketStatus, setSocketStatus] = useState('connecting');
+export const useWebSocket = (serverUrl, name, onMessageReceived, onBinaryReceived) => {
+  const [socketStatus, setSocketStatus] = useState('disconnected');
   const [roomId, setRoomId] = useState('');
   const [peers, setPeers] = useState([]);
   const socketRef = useRef(null);
-  
-  const clientName = useRef(getRandomName());
   const deviceDetails = useRef(getDeviceDetails().summary);
 
   const sendMessage = useCallback((type, payload) => {
@@ -51,8 +43,9 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
   }, []);
 
   const connect = useCallback(() => {
+    if (!name) return;
     setSocketStatus('connecting');
-    const wsUrl = `${serverUrl}?name=${encodeURIComponent(clientName.current)}&device=${encodeURIComponent(deviceDetails.current)}`;
+    const wsUrl = `${serverUrl}?name=${encodeURIComponent(name)}&device=${encodeURIComponent(deviceDetails.current)}`;
     console.log(`Connecting to WebSocket at: ${wsUrl}`);
     
     const ws = new WebSocket(wsUrl);
@@ -97,7 +90,7 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
               break;
               
             default:
-              // Forward other signaling/relay events to the message handler
+              // Forward other signaling/relay/broadcast events to the message handler
               if (onMessageReceived) {
                 onMessageReceived(msg);
               }
@@ -117,16 +110,21 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
       console.error('WebSocket encountered an error:', err);
       setSocketStatus('disconnected');
     };
-  }, [serverUrl, onMessageReceived, onBinaryReceived]);
+  }, [serverUrl, name, onMessageReceived, onBinaryReceived]);
 
   useEffect(() => {
+    if (!name) {
+      setSocketStatus('disconnected');
+      return;
+    }
     connect();
     return () => {
       if (socketRef.current) {
         socketRef.current.close();
+        socketRef.current = null;
       }
     };
-  }, [connect]);
+  }, [connect, name]);
 
   const joinRoom = useCallback((code) => {
     sendMessage('join-room', { code });
@@ -139,7 +137,7 @@ export const useWebSocket = (serverUrl, onMessageReceived, onBinaryReceived) => 
     sendMessage,
     sendBinary,
     joinRoom,
-    myName: clientName.current,
+    myName: name,
     myDevice: deviceDetails.current,
   };
 };

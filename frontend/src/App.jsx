@@ -9,22 +9,19 @@ function App() {
   const [activePeer, setActivePeer] = useState(null);
   const signalCallbackRef = useRef(null);
 
+  // Retrieve username from localStorage or start empty to trigger the welcome screen
+  const [username, setUsername] = useState(localStorage.getItem('landrop-username') || '');
+
   const handleSignalReceived = useCallback((msg) => {
     if (signalCallbackRef.current) {
       signalCallbackRef.current(msg);
     }
   }, []);
 
-  // Determine WebSocket backend URL (uses VITE_WS_URL env var if set, otherwise falls back dynamically for local LAN testing)
-  const getWSUrl = () => {
-    if (import.meta.env.VITE_WS_URL) {
-      return import.meta.env.VITE_WS_URL;
-    }
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const backendHost = window.location.hostname === 'localhost' ? 'localhost:8000' : `${window.location.hostname}:8000`;
-    return `${wsProtocol}//${backendHost}/ws`;
-  };
-  const wsUrl = getWSUrl();
+  // Determine WebSocket backend URL dynamically to support cross-device testing on local LAN
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const backendHost = window.location.hostname === 'localhost' ? 'localhost:8000' : `${window.location.hostname}:8000`;
+  const wsUrl = `${wsProtocol}//${backendHost}/ws`;
 
   // Ref to hold handleIncomingBinary to avoid dependency cycles
   const binaryCallbackRef = useRef(null);
@@ -43,7 +40,7 @@ function App() {
     joinRoom,
     myName,
     myDevice,
-  } = useWebSocket(wsUrl, handleSignalReceived, handleBinaryReceived);
+  } = useWebSocket(wsUrl, username, handleSignalReceived, handleBinaryReceived);
 
   const {
     connectionState,
@@ -96,6 +93,14 @@ function App() {
     setActivePeer(null);
   };
 
+  const handleUpdateName = (newName) => {
+    const trimmed = newName.trim();
+    if (trimmed) {
+      localStorage.setItem('landrop-username', trimmed);
+      setUsername(trimmed);
+    }
+  };
+
   return (
     <div className="app-layout">
       {activePeer ? (
@@ -113,10 +118,11 @@ function App() {
           joinRoom={joinRoom}
           onSelectPeer={handleSelectPeer}
           socketStatus={socketStatus}
-          myName={myName}
+          myName={username}
           myDevice={myDevice}
           broadcastState={broadcastState}
           onBroadcastFile={broadcastFile}
+          onUpdateName={handleUpdateName}
         />
       )}
     </div>
