@@ -345,6 +345,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
         fileStorageRef.current.close();
         fileStorageRef.current = null;
         activeSharedKeyRef.current = null;
+        transferMetaRef.current = null;
       }
     } catch (err) {
       console.error('Error during packet process:', err);
@@ -355,6 +356,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
         fileStorageRef.current = null;
       }
       activeSharedKeyRef.current = null;
+      transferMetaRef.current = null;
     }
   }, [stopSpeedTracking]);
 
@@ -440,6 +442,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
         await fileStorageRef.current.clear();
         fileStorageRef.current.close();
         fileStorageRef.current = null;
+        broadcastMetaRef.current = null;
       }
     } catch (err) {
       console.error('Error during broadcast packet process:', err);
@@ -449,6 +452,7 @@ export const useWebRTC = (sendMessage, sendBinary) => {
         fileStorageRef.current.close();
         fileStorageRef.current = null;
       }
+      broadcastMetaRef.current = null;
     }
   }, [stopBroadcastSpeedTracking]);
 
@@ -889,10 +893,10 @@ export const useWebRTC = (sendMessage, sendBinary) => {
   }, [broadcastState.active, sendMessage, sendBinary, startBroadcastSpeedTracking, stopBroadcastSpeedTracking]);
 
   const handleIncomingBinary = useCallback((arrayBuffer) => {
-    if (transferMetaRef.current && transferMetaRef.current.mode === 'relay') {
-      processBinaryPacket(arrayBuffer);
-    } else if (broadcastMetaRef.current) {
+    if (broadcastMetaRef.current) {
       processBroadcastBinaryPacket(arrayBuffer);
+    } else if (transferMetaRef.current && transferMetaRef.current.mode === 'relay') {
+      processBinaryPacket(arrayBuffer);
     }
   }, [processBinaryPacket, processBroadcastBinaryPacket]);
 
